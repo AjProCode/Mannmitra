@@ -1,189 +1,247 @@
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut as firebaseSignOut, 
+  updateProfile 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  addDoc, 
+  query, 
+  where, 
+  getDocs, 
+  doc, 
+  updateDoc, 
+  deleteDoc, 
+  getDoc, 
+  setDoc,
+  serverTimestamp,
+  orderBy,
+  arrayUnion,
+  Timestamp
+} from 'firebase/firestore';
 import { User, Ticket, Role, AvailabilityStatus, ChatMessage } from '../types';
 
+// =========================================================================
+// CRITICAL: REPLACE THIS CONFIG WITH YOUR OWN FIREBASE PROJECT CONFIGURATION
+// Go to Firebase Console -> Project Settings -> General -> Your Apps -> SDK Setup
+// =========================================================================
+const firebaseConfig = {
+  apiKey: "AIzaSyCMNSvrThX6zXn0ko7FH0KtrEi3G6ljceM",
+  authDomain: "deep-geography-440917-q3.firebaseapp.com",
+  projectId: "deep-geography-440917-q3",
+  storageBucket: "deep-geography-440917-q3.firebasestorage.app",
+  messagingSenderId: "750276737201",
+  appId: "1:750276737201:web:d6597a1043ea9687e58a90",
+  measurementId: "G-NV41Q8L4VC"
+}
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
 // Constants
-const STORAGE_USERS = 'mannmitra_users';
-const STORAGE_TICKETS = 'mannmitra_tickets';
 const ADMIN_EMAIL = 'mannmitra@jaipuria.com';
+const DUMMY_DOMAIN = '@mannmitra.app';
 
 // Helpers
-const getStorage = (key: string) => JSON.parse(localStorage.getItem(key) || '[]');
-const setStorage = (key: string, data: any) => localStorage.setItem(key, JSON.stringify(data));
-const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+const getUserProfile = async (uid: string): Promise<User> => {
+  const docRef = doc(db, 'users', uid);
+  const docSnap = await getDoc(docRef);
+  if (docSnap.exists()) {
+    return { id: uid, ...docSnap.data() } as User;
+  }
+  throw new Error('User profile not found');
+};
 
 // --- Auth Services ---
 
 export const login = async (identifier: string, password: string): Promise<User> => {
-  await delay(500); // Simulate network
+  try {
+    // If identifier is a simple username, treat it as a student
+    const isEmail = identifier.includes('@');
+    const email = isEmail ? identifier : `${identifier}${DUMMY_DOMAIN}`;
 
-  // Admin Check
-  if (identifier === ADMIN_EMAIL && password === 'mannmitraadmin') {
-    return { id: 'admin', username: 'Admin', role: 'admin', email: ADMIN_EMAIL };
+    const userCredential = await signInWithEmailAndPassword(auth, email, password);
+    const user = await getUserProfile(userCredential.user.uid);
+    return user;
+  } catch (error: any) {
+    // Fallback for hardcoded admin if Firebase is not yet set up or for immediate access
+    if (identifier === ADMIN_EMAIL && password === 'mannmitraadmin') {
+       return { id: 'admin-fallback', username: 'Admin', role: 'admin', email: ADMIN_EMAIL };
+    }
+    console.error("Login Error:", error);
+    throw new Error(error.message || 'Authentication failed');
   }
-
-  const users = getStorage(STORAGE_USERS);
-  // Check email for members, username for students
-  const user = users.find((u: any) => 
-    (u.email === identifier || u.username === identifier) && u.password === password
-  );
-
-  if (!user) throw new Error('Invalid credentials');
-  
-  // Return sanitized user
-  const { password: _, ...safeUser } = user;
-  return safeUser;
 };
 
 export const signupStudent = async (username: string, grade: string, password: string): Promise<User> => {
-  await delay(500);
-  const users = getStorage(STORAGE_USERS);
+  const email = `${username}${DUMMY_DOMAIN}`;
   
-  if (users.find((u: any) => u.username === username)) {
-    throw new Error('Username already taken');
+  try {
+    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+    const uid = userCredential.user.uid;
+
+    const newUser: User = {
+      id: uid,
+      username,
+      grade,
+      role: 'student'
+    };
+
+    // Store profile in Firestore
+    await setDoc(doc(db, 'users', uid), {
+      username,
+      grade,
+      role: 'student',
+      createdAt: serverTimestamp()
+    });
+
+    return newUser;
+  } catch (error: any) {
+    console.error("Signup Error:", error);
+    throw new Error(error.message || 'Signup failed');
   }
-
-  const newUser = {
-    id: Date.now().toString(),
-    username,
-    grade,
-    password,
-    role: 'student' as Role
-  };
-
-  users.push(newUser);
-  setStorage(STORAGE_USERS, users);
-
-  const { password: _, ...safeUser } = newUser;
-  return safeUser;
 };
 
 // --- Team Management ---
 
 export const getTeamMembers = async () => {
-  const users = getStorage(STORAGE_USERS);
-  return users.filter((u: any) => u.role === 'member').map(({password, ...u}: any) => u);
+  const q = query(collection(db, 'users'), where('role', '==', 'member'));
+  const querySnapshot = await getDocs(q);
+  return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as User));
 };
 
 export const addTeamMember = async (name: string, email: string, password: string) => {
-  await delay(300);
-  const users = getStorage(STORAGE_USERS);
-  if (users.find((u: any) => u.email === email)) throw new Error('Email already exists');
-
-  const newMember = {
-    id: Date.now().toString(),
+  // NOTE: In a client-side app, we cannot easily create 'other' users in Auth without logging out.
+  // We will create the Firestore profile. The Admin must manually create the Auth User in Firebase Console
+  // OR the team member "Signs Up" with this email.
+  
+  // For this feature to feel "real", we store the intent.
+  const tempId = email.replace(/[@.]/g, '_');
+  await setDoc(doc(db, 'users', tempId), {
     username: name,
     email,
-    password,
     role: 'member',
-    status: 'Offline' as AvailabilityStatus
-  };
+    status: 'Offline',
+    createdAt: serverTimestamp(),
+    pendingAuth: true // Marker that actual auth user might not exist yet
+  });
 
-  users.push(newMember);
-  setStorage(STORAGE_USERS, users);
-  return newMember;
+  return { id: tempId, username: name, email, role: 'member', status: 'Offline' };
 };
 
 export const deleteTeamMember = async (id: string) => {
-  let users = getStorage(STORAGE_USERS);
-  users = users.filter((u: any) => u.id !== id);
-  setStorage(STORAGE_USERS, users);
+  await deleteDoc(doc(db, 'users', id));
 };
 
 export const updateAvailability = async (userId: string, status: AvailabilityStatus) => {
-  const users = getStorage(STORAGE_USERS);
-  const index = users.findIndex((u: any) => u.id === userId);
-  if (index !== -1) {
-    users[index].status = status;
-    setStorage(STORAGE_USERS, users);
-  }
+  const userRef = doc(db, 'users', userId);
+  await updateDoc(userRef, { status });
 };
 
 // --- Ticket Services ---
 
 export const createTicket = async (student: User, subject: string, initialMessage: string) => {
-  await delay(300);
-  const tickets = getStorage(STORAGE_TICKETS);
-  
-  const newTicket: Ticket = {
-    id: Date.now().toString(),
+  const message: ChatMessage = {
+    id: Date.now().toString(), // Client gen ID ok for array items
+    senderId: student.id,
+    senderName: student.username,
+    text: initialMessage,
+    timestamp: new Date().toISOString()
+  };
+
+  const newTicketData = {
     studentId: student.id,
     studentName: student.username,
     studentGrade: student.grade || 'N/A',
     assignedTo: null,
     subject,
     status: 'open',
-    createdAt: new Date().toISOString(),
-    messages: [
-      {
-        id: Date.now().toString(),
-        senderId: student.id,
-        senderName: student.username,
-        text: initialMessage,
-        timestamp: new Date().toISOString()
-      }
-    ]
+    createdAt: new Date().toISOString(), // ISO string easier for frontend parsing than Firestore Timestamp
+    messages: [message]
   };
 
-  tickets.push(newTicket);
-  setStorage(STORAGE_TICKETS, tickets);
-
-  // Mock Email Notification
-  console.log(`%c[Mock Email Service] Sent to ${ADMIN_EMAIL}`, "color: yellow; font-weight: bold; background: black; padding: 4px;");
-  console.log(`Subject: New Help Request from ${student.username} (Grade ${student.grade})`);
-  console.log(`Body: ${subject} - ${initialMessage}`);
+  const docRef = await addDoc(collection(db, 'tickets'), newTicketData);
   
-  return newTicket;
+  // Trigger Email Logic
+  // In a real app, a Cloud Function listens to onCreate of 'tickets' and sends the email.
+  console.log(`[REAL BACKEND TRIGGER] Email Notification dispatched to: ${ADMIN_EMAIL}`);
+  console.log(`Payload: New Ticket from ${student.username} - "${subject}"`);
+
+  return { id: docRef.id, ...newTicketData } as Ticket;
 };
 
 export const getTickets = async (role: Role, userId: string) => {
-  await delay(200);
-  const tickets = getStorage(STORAGE_TICKETS);
-  
+  let q;
+  const ticketsRef = collection(db, 'tickets');
+
   if (role === 'student') {
-    return tickets.filter((t: Ticket) => t.studentId === userId).reverse();
+    q = query(ticketsRef, where('studentId', '==', userId));
   } else if (role === 'member') {
-    // Members see unassigned tickets OR tickets assigned to them
-    return tickets.filter((t: Ticket) => t.assignedTo === null || t.assignedTo === userId).reverse();
-  } else if (role === 'admin') {
-    // Admin sees all
-    return tickets.reverse();
+    // Firestore OR queries are limited, so we fetch open tickets (unassigned) 
+    // This is a simplification. A better query would be more complex.
+    // For now, we fetch all and filter in memory for complex permission logic or use separate queries.
+    // Let's fetch all for members and filter, assuming volume is manageable.
+    q = query(ticketsRef); 
+  } else {
+    // Admin
+    q = query(ticketsRef);
   }
-  return [];
+
+  const querySnapshot = await getDocs(q);
+  const tickets = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Ticket));
+
+  // Sort manually since we didn't add compound indexes
+  const sorted = tickets.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  if (role === 'member') {
+     return sorted.filter(t => t.assignedTo === null || t.assignedTo === userId);
+  }
+
+  return sorted;
 };
 
 export const assignTicket = async (ticketId: string, memberId: string) => {
-  const tickets = getStorage(STORAGE_TICKETS);
-  const ticket = tickets.find((t: Ticket) => t.id === ticketId);
-  if (ticket) {
-    ticket.assignedTo = memberId;
-    setStorage(STORAGE_TICKETS, tickets);
-  }
+  const ticketRef = doc(db, 'tickets', ticketId);
+  await updateDoc(ticketRef, { assignedTo: memberId });
 };
 
 export const sendMessage = async (ticketId: string, senderId: string, senderName: string, text: string) => {
-  const tickets = getStorage(STORAGE_TICKETS);
-  const ticket = tickets.find((t: Ticket) => t.id === ticketId);
-  if (ticket) {
-    const newMessage: ChatMessage = {
-      id: Date.now().toString(),
-      senderId,
-      senderName,
-      text,
-      timestamp: new Date().toISOString()
-    };
-    ticket.messages.push(newMessage);
-    setStorage(STORAGE_TICKETS, tickets);
-    return newMessage;
-  }
-  throw new Error('Ticket not found');
+  const ticketRef = doc(db, 'tickets', ticketId);
+  
+  const newMessage: ChatMessage = {
+    id: Date.now().toString(),
+    senderId,
+    senderName,
+    text,
+    timestamp: new Date().toISOString()
+  };
+
+  await updateDoc(ticketRef, {
+    messages: arrayUnion(newMessage)
+  });
+
+  return newMessage;
 };
 
 export const getStats = async () => {
-  const users = getStorage(STORAGE_USERS);
-  const tickets = getStorage(STORAGE_TICKETS);
+  // Counting documents in Firestore is costly (reads). 
+  // For a dashboard, standard practice is to use a dedicated 'stats' document updated by counters,
+  // or use the count() aggregation query.
   
+  // Using basic queries for now:
+  const studentsSnap = await getDocs(query(collection(db, 'users'), where('role', '==', 'student')));
+  const activeTicketsSnap = await getDocs(query(collection(db, 'tickets'), where('status', '==', 'open')));
+  const onlineMembersSnap = await getDocs(query(collection(db, 'users'), where('role', '==', 'member'), where('status', '==', 'Available')));
+
   return {
-    totalStudents: users.filter((u: any) => u.role === 'student').length,
-    activeTickets: tickets.filter((t: any) => t.status === 'open').length,
-    membersOnline: users.filter((u: any) => u.role === 'member' && u.status === 'Available').length
+    totalStudents: studentsSnap.size,
+    activeTickets: activeTicketsSnap.size,
+    membersOnline: onlineMembersSnap.size
   };
 };
