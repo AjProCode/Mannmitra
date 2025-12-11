@@ -1,0 +1,7 @@
+{
+  "name": "MannMitra",
+  "description": "A safe, anonymous space to share your burdens with empathetic listeners and a supportive AI companion.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
